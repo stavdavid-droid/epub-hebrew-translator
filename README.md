@@ -1,25 +1,25 @@
-# EPUB Hebrew Translator — Gemini free-tier edition
+# EPUB Hebrew Translator — RTL + automatic full-book translation
 
-This Streamlit app translates unencrypted EPUB books from English to Hebrew while retaining the EPUB's XHTML, chapters, images, and inline structure. Uses Gemini API (a separate quota from Gemini consumer subscriptions).
+## What's new
+- Hebrew RTL user interface (including labels, inputs, upload controls and progress).
+- One click translates all remaining text segments sequentially, without a per-batch slider.
+- Automatically saves a local checkpoint after every successful group, and makes a portable ZIP checkpoint available for download.
+- Full Hebrew EPUB is available when all segments are complete.
+- Selectable delay between requests, default 10 seconds; the free Gemini API may still reach rate/day quotas.
 
-## Deploy updates to existing Streamlit app
+## Update existing Streamlit app
+1. Unzip this archive locally.
+2. Upload `app.py`, `translator.py`, `requirements.txt`, and `README.md` to the **root** of the same GitHub repository and branch already deployed.
+3. Commit changes; Streamlit Community Cloud updates the app automatically. If it stays on the old version, refresh or reboot the app from its Streamlit dashboard.
+4. Open the same `.streamlit.app` address, supply a Gemini API key from https://aistudio.google.com/apikey (verify the project is Free), and upload your non-DRM EPUB.
+5. Click **התחל / המשך תרגום הספר כולו**. Leave the browser tab open. Download your checkpoint ZIP if stopped or limited; on a later session upload that ZIP to resume. When done download the full EPUB.
 
-1. Keep existing GitHub repository / branch / entrypoint `app.py` unchanged.
-2. Replace `app.py` and `requirements.txt` in repository root; add/replace `translator.py`.
-3. Commit changes to the branch Streamlit currently deploys. Streamlit Community Cloud rebuilds automatically.
-4. Create a key at https://aistudio.google.com/apikey with a free-tier project *without enabling Cloud billing*. Verify current limits at https://aistudio.google.com/usage.
-5. Open the unchanged *.streamlit.app URL and paste your API key in the password input field. **Never commit keys to GitHub**.
-6. Upload EPUB, choose Gemini 2.5 Flash, translate 1–2 batches for first test and download partial EPUB to inspect.
-7. Continue in chunks, downloading the **checkpoint ZIP** after every run. Upload the checkpoint ZIP to resume after a tab/host restart. Store it locally: Streamlit Community Cloud does not provide durable local disk storage.
-8. Download the final EPUB once all segments are translated.
+## Limitations you should know
+- This is an **interactive** Streamlit app, not a persistent/background job scheduler. Browser disconnections, server restarts, or hitting quotas can interrupt translation. A local on-server checkpoint is automatic but **not durable** across cloud server restarts. The ZIP you download is the portable backup.
+- Rate limits vary per project and model. A full book might take multiple sessions/days, even with one-click translation.
+- Google AI subscription and Google Gemini API are billed/limited separately; do not enable billing for a Free-only project. Google may use Free tier content to improve products.
+- Some EPUB content (such as embedded images with English text) is not translated. HTML text nodes are translated while formatting and images are preserved; footnotes/navigation and complex inline typography need QA. EPUB metadata/title may retain original language.
+- The source book must be free of DRM, and you must have the rights/authorization to translate it.
 
-## Limitations and important notices
-
-- **No fully automatic overnight/background processing**: free-tier quotas, Community Cloud app restarts, and Streamlit request lifetimes mean manual restarts are required. This app deliberately does not claim otherwise.
-- Free-tier quota is per Google project, may vary and change. Rate limit 429 stops cleanly; resume later with a checkpoint.
-- **Gemini subscription** (consumer app) is *not* Gemini API billing or quota.
-- No API key is included in checkpoint archive or source control. However, Google receives book text. Free-tier data may be used for product improvement.
-- Each source text node is translated in a contextual batch, retaining original inline tags. For books with aggressive inline styling (sentences split across many tags) quality may be less consistent; review sample chapters. An automated completeness check verifies number of translated text nodes and flags non-Hebrew outputs, but **does not prove semantic fidelity**.
-- XHTML parsing requires valid XML; malformed EPUB files are rejected, not auto-repaired. Complex layout/CSS, vertical text, footnotes and reading-system behavior need manual validation. Metadata inside OPF is not translated.
-- DRM books are not supported. Only use content you have legal permission to process; do not redistribute copyrighted translations without rights.
-- App is best suited for private personal use. Keep Streamlit access private if possible.
+## Technical
+Python 3.10+, Streamlit, `google-genai`, `lxml`. App entry point: `app.py`. The API key is not written to checkpoint files or local disk.
