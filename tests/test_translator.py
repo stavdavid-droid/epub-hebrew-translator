@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 import translator as t
+from config import DEFAULT_MODEL, MODEL_OPTIONS, normalize_model
 
 
 def epub(long=False):
@@ -32,7 +33,7 @@ def test_roundtrip_epub_and_checkpoint():
     assert nodes
     assert all('Never change this code' not in s.source for s in nodes)
     done={s.key:'שלום עולם ספר זה תורגם היטב' for s in nodes}
-    checkpoint=t.save_checkpoint(source,done,'gemini-2.5-flash','Michael=מייקל')
+    checkpoint=t.save_checkpoint(source,done,DEFAULT_MODEL,'Michael=מייקל')
     orig, loaded, model, glossary=t.load_checkpoint(checkpoint)
     assert orig==source and loaded==done and glossary
     out=t.make_epub(orig,loaded)
@@ -62,7 +63,7 @@ def test_long_split_reversible_and_epub_complete():
 def test_corrupt_checkpoint():
     source=epub()
     nodes,_,_=t.parse_book(source)
-    cp=t.save_checkpoint(source,{nodes[0].key:'שלום'},'gemini-2.5-flash','')
+    cp=t.save_checkpoint(source,{nodes[0].key:'שלום'},DEFAULT_MODEL,'')
     with zipfile.ZipFile(io.BytesIO(cp)) as z:
         body=json.loads(z.read('progress.json'))
     body['sha256']='0'*64
@@ -164,3 +165,18 @@ def test_output_invalid_counts_and_ratio():
     with pytest.raises(t.BookError):t.validate_translations(segs[:1],[''])
     long=next(s for s in segs if len(s.source)>180)
     with pytest.raises(t.BookError):t.validate_translations([long],['אב'])
+
+
+def test_model_config_single_source():
+    assert DEFAULT_MODEL in MODEL_OPTIONS
+    assert len(set(MODEL_OPTIONS)) == len(MODEL_OPTIONS)
+    assert normalize_model(MODEL_OPTIONS[1]) == MODEL_OPTIONS[1]
+    assert normalize_model('gemini-deprecated-model') == DEFAULT_MODEL
+
+def test_old_checkpoint_model_migrates_to_default():
+    source=epub()
+    nodes,_,_=t.parse_book(source)
+    cp=t.save_checkpoint(source,{nodes[0].key:'שלום'},'gemini-2.5-flash','')
+    original,done,model,glossary=t.load_checkpoint(cp)
+    assert model == DEFAULT_MODEL
+    assert len(done) == 1

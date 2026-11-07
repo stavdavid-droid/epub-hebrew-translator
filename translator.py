@@ -14,6 +14,7 @@ from typing import Callable, Iterable
 from urllib.parse import unquote
 
 from lxml import etree
+from config import DEFAULT_MODEL, normalize_model
 
 MAX_BOOK = 60 * 1024 * 1024
 MAX_UNPACKED = 250 * 1024 * 1024
@@ -420,8 +421,7 @@ def load_checkpoint(blob: bytes):
     done=meta.get('done')
     if not isinstance(done,dict) or any(k not in valid or not isinstance(v,str) or not v.strip() for k,v in done.items()):
         raise BookError('מזהי התרגום בקובץ החידוש אינם תקינים.')
-    model=meta.get('model','gemini-2.5-flash')
+    model=normalize_model(meta.get('model',DEFAULT_MODEL))
     glossary=meta.get('glossary','')
     if not isinstance(glossary,str) or len(glossary)>10000: raise BookError('מילון המונחים בקובץ החידוש אינו תקין.')
-    if model not in ('gemini-2.5-flash','gemini-2.5-flash-lite'): model='gemini-2.5-flash'
     return original,done,model,glossary

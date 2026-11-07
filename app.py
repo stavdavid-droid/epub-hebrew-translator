@@ -10,6 +10,7 @@ from tempfile import gettempdir
 from uuid import uuid4
 
 import streamlit as st
+from config import DEFAULT_MODEL, MODEL_OPTIONS, normalize_model
 from translator import (BookError, StopTranslation, load_checkpoint, make_epub,
                         parse_book, pending_groups, save_checkpoint, translate_group)
 
@@ -67,7 +68,7 @@ if 'session_id' not in st.session_state:
 if 'done' not in st.session_state: st.session_state.done={}
 if 'book' not in st.session_state: st.session_state.book=None
 if 'name' not in st.session_state: st.session_state.name='book.epub'
-if 'model' not in st.session_state: st.session_state.model='gemini-2.5-flash'
+if 'model' not in st.session_state: st.session_state.model=DEFAULT_MODEL
 if 'glossary' not in st.session_state: st.session_state.glossary=''
 
 # Fast local working copy only. NOT durable on Streamlit Cloud restart/redeploy.
@@ -104,7 +105,7 @@ if up is not None:
             else:
                 book=raw
                 parse_book(book)
-                done,model,glossary={},'gemini-2.5-flash',''
+                done,model,glossary={},DEFAULT_MODEL,''
                 name=up.name
             st.session_state.update(book=book,done=done,model=model,glossary=glossary,
                                     fingerprint=fingerprint,name=name,last_message=None)
@@ -126,8 +127,8 @@ if st.session_state.book:
         st.subheader('התקדמות')
         meter=st.progress(finished/total, text=f'{finished:,} מתוך {total:,} מקטעים')
         st.caption('מקטע אינו בהכרח עמוד או פרק. נשמר רק תרגום שעבר בדיקות בסיסיות.')
-        st.session_state.model=st.selectbox('מודל תרגום', ['gemini-2.5-flash','gemini-2.5-flash-lite'],
-                                          index=['gemini-2.5-flash','gemini-2.5-flash-lite'].index(st.session_state.model))
+        st.session_state.model=st.selectbox('מודל תרגום', MODEL_OPTIONS,
+                                          index=MODEL_OPTIONS.index(normalize_model(st.session_state.model)))
         st.session_state.glossary=st.text_area('שמות ומונחים לתרגום עקבי (רשות)',value=st.session_state.glossary,
                                               max_chars=3000,height=90)
         delay=st.select_slider('המתנה בין בקשות מוצלחות',options=[5,10,15,20,30],value=10,
