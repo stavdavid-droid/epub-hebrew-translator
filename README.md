@@ -1,25 +1,57 @@
-# EPUB Hebrew Translator — RTL + automatic full-book translation
+# מתרגם EPUB לעברית – גרסה 4 (Gemini / Streamlit)
 
-## What's new
-- Hebrew RTL user interface (including labels, inputs, upload controls and progress).
-- One click translates all remaining text segments sequentially, without a per-batch slider.
-- Automatically saves a local checkpoint after every successful group, and makes a portable ZIP checkpoint available for download.
-- Full Hebrew EPUB is available when all segments are complete.
-- Selectable delay between requests, default 10 seconds; the free Gemini API may still reach rate/day quotas.
+## מה התחדש
+- ממשק עברי RTL, ספר מלא בלחיצה אחת והפקת EPUB עם כיווניות עברית.
+- Gemini API מוגדר **פעם אחת בלבד** ב־Streamlit Secrets, ללא הזנת מפתח בכל ביקור.
+- **סיסמת כניסה לאפליקציה**: אחרת כל מי שמקבל את הקישור יכול לנצל את מכסת ה־API שלך.
+- אבחון קודי HTTP ופרטי QuotaFailure. `429` בלי נתוני אבחון: **עוצרים**, לא מניחים שזו מכסה יומית.
+- ל־RPM/TPM ולתקלות 5xx: ניסיונות חוזרים מוגבלים, השהיה מעריכית ו־RetryInfo כשקיים. למכסה יומית: עצירה.
+- ניסיונות חוזרים אוטומטיים של ספריית Gemini כבויים (כדי למנוע ניסיונות חבויים).
+- חלוקת קטעי מקור גדולים מראש ופתיחת קבוצות במקרה של תשובה חסרה, עם שמירת הצלחות חלקיות.
+- אימות מבנה ארכיון EPUB / checkpoint, מגבלות גודל, זיהוי DRM, שימור תמונות ועיצוב ועידכון שפת הספר ל־he.
+- בדיקות בסיסיות לזיהוי תרגום קטוע או קצר באופן חריג.
 
-## Update existing Streamlit app
-1. Unzip this archive locally.
-2. Upload `app.py`, `translator.py`, `requirements.txt`, and `README.md` to the **root** of the same GitHub repository and branch already deployed.
-3. Commit changes; Streamlit Community Cloud updates the app automatically. If it stays on the old version, refresh or reboot the app from its Streamlit dashboard.
-4. Open the same `.streamlit.app` address, supply a Gemini API key from https://aistudio.google.com/apikey (verify the project is Free), and upload your non-DRM EPUB.
-5. Click **התחל / המשך תרגום הספר כולו**. Leave the browser tab open. Download your checkpoint ZIP if stopped or limited; on a later session upload that ZIP to resume. When done download the full EPUB.
+## התקנה / עדכון של האפליקציה שכבר פרסמת
+1. חלץ את ה־ZIP הזה.
+2. במאגר GitHub שה־Streamlit שלך משתמש בו, החלף `app.py`, `translator.py`, `requirements.txt`, `README.md`; אפשר גם להוסיף `.gitignore` ותיקיית `tests`.
+3. בצע Commit לענף שכבר מקושר לאפליקציה. Streamlit יתעדכן אוטומטית.
+4. היכנס ל־https://share.streamlit.io/ → בחר את האפליקציה → **Settings** → **Secrets**.
+5. הזן בשדה Secrets את ההגדרות הבאות (מפתח וסיסמה פרטיים שלך, **לא הערכים לדוגמה**):
 
-## Limitations you should know
-- This is an **interactive** Streamlit app, not a persistent/background job scheduler. Browser disconnections, server restarts, or hitting quotas can interrupt translation. A local on-server checkpoint is automatic but **not durable** across cloud server restarts. The ZIP you download is the portable backup.
-- Rate limits vary per project and model. A full book might take multiple sessions/days, even with one-click translation.
-- Google AI subscription and Google Gemini API are billed/limited separately; do not enable billing for a Free-only project. Google may use Free tier content to improve products.
-- Some EPUB content (such as embedded images with English text) is not translated. HTML text nodes are translated while formatting and images are preserved; footnotes/navigation and complex inline typography need QA. EPUB metadata/title may retain original language.
-- The source book must be free of DRM, and you must have the rights/authorization to translate it.
+```toml
+GEMINI_API_KEY = "AIza..."
+APP_PASSWORD = "choose-a-long-private-password"
+```
 
-## Technical
-Python 3.10+, Streamlit, `google-genai`, `lxml`. App entry point: `app.py`. The API key is not written to checkpoint files or local disk.
+6. לחץ **Save**. אם נדרש, בצע reboot לאפליקציה דרך ניהול Streamlit (לא Deploy חדש).
+7. פתח את הקישור הקבוע לאפליקציה, הכנס את **סיסמת האפליקציה** (לא את מפתח ה־API), העלה EPUB, והפעל תרגום.
+
+⚠️ **אין להוסיף את ה־API key בקוד `app.py` או ב־GitHub, גם אם המאגר פרטי.** אפשר להשיג בדיוק את רצונך — הזנה אחת בלבד — באמצעות Secrets, ללא הסיכון של חשיפת המפתח בהיסטוריית Git.
+
+## שימוש חינמי
+- צור API key ב־https://aistudio.google.com/api-keys.
+- ודא שפרויקט ה־API נמצא ב־Free, ללא Billing בתשלום. מנוי Gemini שלך נפרד ממכסת API.
+- בקוד מופיע `gemini-2.5-flash` כברירת מחדל, עם `gemini-2.5-flash-lite` כחלופה.
+- ראה מכסות בפועל: https://aistudio.google.com/usage ו־https://aistudio.google.com/rate-limit.
+
+## תרגום שנעצר
+- האפליקציה שומרת checkpoint אחרי **כל קבוצה**, גם כשקבוצה מפוצלת לתת־בקשות.
+- כשהריצה נעצרת, לחץ **הורד קובץ חידוש ZIP** ושמור במחשב.
+- בכניסה הבאה העלה את ה־ZIP ולחץ להמשך.
+- **חשוב מאוד:** אחסון השרת של Streamlit Community Cloud זמני, אינו גיבוי יציב, וההרצה אינה ממשיכה כשסוגרים את הדפדפן. הורדת ה־ZIP היא פעולת גיבוי חובה. לשמירה אוטומטית קבועה גם אחרי קריסה צריך חיבור לאחסון חיצוני בתהליך נפרד.
+- checkpoint בפורמט v4 אינו תואם אוטומטית ל־ZIP של גרסה 3. צריך להעלות את קובץ הספר המקורי מחדש במקרה כזה; **אל תמחק גיבוי ישן** לפני שבדקת מעבר.
+- התרגום שומר תוכן XHTML. קבצים מסוימים מכילים תוכן ב־NCX או בטקסט בתוך תמונות שאינו מתורגם בגירסה זו; אין כרגע OCR או תרגום מטא־דאטה מלא.
+
+## בדיקות
+```bash
+pip install -r requirements.txt
+pip install pytest
+pytest -q
+streamlit run app.py
+```
+אין להעלות `secrets.toml` למאגר. `google-genai` ו־`streamlit` נדרשים להתנסות בפועל אך בדיקות הליבה פועלות ללא API חי.
+
+## מגבלות
+- ללא מפתח אמיתי לא ניתן להבטיח שבקשת התרגום תצליח בפועל, או שהמודל יהיה זמין בפרויקט שלך.
+- בדיקות איכות מבניות אינן עריכה לשונית ואינן מבטיחות דיוק מלא של הטקסט.
+- מי שמפעיל את השירות צריך לוודא שהוא מורשה לעבד את הספר ולשלוח אותו ל־Google. תוכן במסלול Free עשוי לשמש לשיפור השירות.

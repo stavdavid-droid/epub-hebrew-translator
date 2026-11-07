@@ -1,178 +1,204 @@
-"""Hebrew RTL Streamlit EPUB translator, single-run translation and portable checkpoints."""
+"""Private Streamlit EPUB translator. Deploy with GEMINI_API_KEY and APP_PASSWORD in Secrets."""
+from __future__ import annotations
+
 import hashlib
-import json
+import hmac
 import re
 import time
-import uuid
 from pathlib import Path
 from tempfile import gettempdir
+from uuid import uuid4
 
 import streamlit as st
-from translator import (BookError, QuotaStop, chunks, extract_nodes,
-                        gemini_translate, load_checkpoint, make_epub, save_checkpoint)
+from translator import (BookError, StopTranslation, load_checkpoint, make_epub,
+                        parse_book, pending_groups, save_checkpoint, translate_group)
 
-st.set_page_config(page_title='מתרגם ספרי EPUB לעברית', page_icon='📖', layout='centered')
+st.set_page_config(page_title='מתרגם EPUB לעברית', page_icon='📚', layout='centered')
 st.markdown('''<style>
-html, body, [data-testid="stApp"], [data-testid="stAppViewContainer"],
-[data-testid="stMain"], .stMainBlockContainer {direction:rtl; text-align:right;}
-h1,h2,h3,h4,p,li,label,div[data-testid="stMarkdownContainer"],
-[data-testid="stAlert"], [data-testid="stCaptionContainer"] {text-align:right;}
-[data-testid="stExpander"] summary {direction:rtl;}
-[data-testid="stFileUploader"] {direction:rtl; text-align:right;}
-[data-testid="stFileUploaderDropzone"] {direction:rtl; text-align:right;}
-[data-testid="stTextInputRootElement"] input,textarea {direction:rtl; text-align:right;}
-[data-testid="stTextInputRootElement"] input[type=password] {direction:ltr; text-align:left;}
-[data-testid="stSelectbox"] {direction:rtl; text-align:right;}
-[data-testid="stProgress"] {direction:rtl;}
-button {direction:rtl;}
-/* English model IDs and URLs should retain left-to-right character order. */
-code,pre {direction:ltr;text-align:left;}
+html, body, .stApp, [data-testid="stAppViewContainer"], [data-testid="stMain"],
+[data-testid="stMainBlockContainer"], [data-testid="stMarkdownContainer"],
+[data-testid="stAlert"], [data-testid="stWidgetLabel"], [data-testid="stCaptionContainer"] {
+ direction:rtl; text-align:right;
+}
+[data-testid="stFileUploader"], [data-testid="stFileUploaderDropzone"],
+[data-testid="stSelectbox"], [data-testid="stExpander"], [data-testid="stButton"],
+[data-testid="stDownloadButton"], [data-testid="stTextArea"] { direction:rtl; text-align:right; }
+input,textarea { direction:rtl; text-align:right; }
+input[type="password"], code, pre { direction:ltr !important; text-align:left !important; }
+button { direction:rtl; }
 </style>''', unsafe_allow_html=True)
 
 st.title('מתרגם ספרי EPUB לעברית')
-st.caption('ממשק עברי · Gemini API · תרגום ספר מלא בלחיצה אחת · חידוש מנקודת עצירה')
-st.info('מנוי Gemini אינו כולל בהכרח שימוש ב־API. לשימוש חינמי ודא שהפרויקט ב־Google AI Studio נמצא במסלול Free.')
+st.caption('תרגום ספר שלם · Gemini · שמירת התקדמות · ממשק עברי')
 
-if 'session_token' not in st.session_state:
-    st.session_state.session_token = uuid.uuid4().hex
-if 'done' not in st.session_state:
-    st.session_state.done = {}
-if 'book' not in st.session_state:
-    st.session_state.book = None
-if 'filename' not in st.session_state:
-    st.session_state.filename = 'book.epub'
-if 'glossary' not in st.session_state:
-    st.session_state.glossary = ''
-if 'model' not in st.session_state:
-    st.session_state.model = 'gemini-2.5-flash'
+# Secrets are configured ONCE in Streamlit Cloud Settings → Secrets, never in GitHub.
+try:
+    API_KEY = str(st.secrets.get('GEMINI_API_KEY','')).strip()
+    APP_PASSWORD = str(st.secrets.get('APP_PASSWORD','')).strip()
+except Exception:
+    API_KEY, APP_PASSWORD = '', ''
 
-# Local disk survives reruns while this server instance remains online, but not
-# Community Cloud restarts/redeploys. User-owned ZIP remains the durable backup.
-WORKDIR = Path(gettempdir()) / 'epub_hebrew_progress' / st.session_state.session_token
-WORKDIR.mkdir(parents=True, exist_ok=True)
+if not API_KEY or not APP_PASSWORD:
+    st.error('נדרשת הגדרה חד־פעמית של GEMINI_API_KEY ושל APP_PASSWORD במסך Secrets של Streamlit Cloud.')
+    st.code('GEMINI_API_KEY = "YOUR_PRIVATE_API_KEY"\nAPP_PASSWORD = "YOUR_STRONG_PRIVATE_PASSWORD"',language='toml')
+    st.stop()
 
-def backup_now():
-    if st.session_state.book and st.session_state.done:
-        raw = save_checkpoint(st.session_state.book, st.session_state.done,
-                              st.session_state.model, st.session_state.glossary)
-        p = WORKDIR / 'checkpoint.zip'
-        temporary = WORKDIR / 'checkpoint.tmp'
-        temporary.write_bytes(raw)
-        temporary.replace(p)
+if not st.session_state.get('authenticated',False):
+    st.subheader('כניסה פרטית')
+    st.caption('סיסמת האפליקציה מגנה על מכסת Gemini שלך מפני מבקרים אחרים.')
+    with st.form('auth'):
+        password = st.text_input('סיסמה',type='password')
+        submitted = st.form_submit_button('כניסה', use_container_width=True)
+    if submitted:
+        if hmac.compare_digest(password,APP_PASSWORD):
+            st.session_state.authenticated=True
+            st.rerun()
+        else:
+            st.error('סיסמה לא נכונה.')
+    st.stop()
 
-def restore_disk_if_available():
-    path = WORKDIR / 'checkpoint.zip'
-    if path.exists() and st.session_state.book:
+with st.sidebar:
+    if st.button('התנתקות'):
+        st.session_state.clear()
+        st.rerun()
+
+if 'session_id' not in st.session_state:
+    st.session_state.session_id = uuid4().hex
+if 'done' not in st.session_state: st.session_state.done={}
+if 'book' not in st.session_state: st.session_state.book=None
+if 'name' not in st.session_state: st.session_state.name='book.epub'
+if 'model' not in st.session_state: st.session_state.model='gemini-2.5-flash'
+if 'glossary' not in st.session_state: st.session_state.glossary=''
+
+# Fast local working copy only. NOT durable on Streamlit Cloud restart/redeploy.
+cache_dir=Path(gettempdir())/'hebrew_epub_jobs'/st.session_state.session_id
+cache_dir.mkdir(parents=True,exist_ok=True)
+checkpoint_path=cache_dir/'progress.zip'
+
+def snapshot():
+    if not st.session_state.book: return
+    raw=save_checkpoint(st.session_state.book,st.session_state.done,st.session_state.model,st.session_state.glossary)
+    temp=checkpoint_path.with_suffix('.tmp')
+    temp.write_bytes(raw)
+    temp.replace(checkpoint_path)
+
+def safe_name(name):
+    return re.sub(r'[^\w.\-]+','_',Path(name).stem)[:70] or 'book'
+
+with st.expander('הוראות', expanded=st.session_state.book is None):
+    st.markdown('''1. העלה ספר EPUB ללא DRM. אם יש לך קובץ חידוש **מהגרסה הזו**, העלה ZIP במקום EPUB.
+2. בחר מודל (Flash מומלץ) ולחץ **תרגם את הספר כולו**.
+3. השאר את החלון פתוח. התרגום ממשיך אוטומטית, ושומר כל קבוצה שהושלמה.
+4. אם יש עצירה, הורד **קובץ חידוש ZIP**. בפעם הבאה העלה אותו והמשך.
+5. בסיום הורד את קובץ EPUB המלא. ניתן לשנות את הגדרות Secrets ללא עדכון GitHub.''')
+
+up=st.file_uploader('ספר EPUB או קובץ חידוש ZIP',type=['epub','zip'])
+if up is not None:
+    raw=up.getvalue()
+    fingerprint=hashlib.sha256(raw).hexdigest()
+    if fingerprint != st.session_state.get('fingerprint'):
         try:
-            orig, done, _, _ = load_checkpoint(path.read_bytes())
-            if hashlib.sha256(orig).digest() == hashlib.sha256(st.session_state.book).digest() and len(done) > len(st.session_state.done):
-                st.session_state.done = done
-        except (BookError, OSError):
-            pass
-
-with st.expander('הוראות שימוש', expanded=st.session_state.book is None):
-    st.markdown('''1. צור מפתח ב־[Google AI Studio](https://aistudio.google.com/apikey) ובדוק שהפרויקט מוגדר Free.
-2. הכנס את המפתח, בחר מודל והעלה EPUB ללא DRM.
-3. לחץ **התחל תרגום של הספר כולו**. התרגום יתקדם מעצמו, ללא לחיצות על קבוצות.
-4. **השאר את הלשונית פתוחה** עד סוף התרגום. אם המכסה נגמרת או החיבור נקטע, הורד קובץ חידוש ZIP כשהממשק זמין.
-5. בפעם הבאה העלה את קובץ החידוש והמשך בלחיצה אחת. לאחר השלמה הורד EPUB מלא בעברית.''')
-
-api_key = st.text_input('מפתח Gemini API', type='password', help='המפתח לא נכלל בקובץ החידוש ולא נכתב לדיסק.')
-models = ['gemini-2.5-flash', 'gemini-2.5-flash-lite']
-model = st.selectbox('מודל התרגום', models, index=models.index(st.session_state.model) if st.session_state.model in models else 0,
-                     help='Flash מומלץ לתרגום ספרותי. הזמינות והמכסה החינמית תלויות בפרויקט Google שלך.')
-source = st.file_uploader('העלה ספר EPUB או קובץ חידוש ZIP', type=['epub', 'zip'])
-if source is not None:
-    stamp = hashlib.sha256(source.getvalue()).hexdigest()
-    if st.session_state.get('uploaded_stamp') != stamp:
-        try:
-            if source.name.lower().endswith('.zip'):
-                book, done, saved_model, glossary = load_checkpoint(source.getvalue())
-                st.session_state.model = saved_model
-                st.session_state.glossary = glossary
-                filename = 'book_translated.epub'
+            if up.name.lower().endswith('.zip'):
+                book,done,model,glossary=load_checkpoint(raw)
+                name='book.epub'
             else:
-                book = source.getvalue()
-                extract_nodes(book)
-                done, glossary = {}, ''
-                filename = source.name
-            st.session_state.book = book
-            st.session_state.done = done
-            st.session_state.filename = filename
-            st.session_state.glossary = glossary
-            st.session_state.uploaded_stamp = stamp
-            backup_now()
+                book=raw
+                parse_book(book)
+                done,model,glossary={},'gemini-2.5-flash',''
+                name=up.name
+            st.session_state.update(book=book,done=done,model=model,glossary=glossary,
+                                    fingerprint=fingerprint,name=name,last_message=None)
+            snapshot()
             st.success('הקובץ נטען בהצלחה.')
-        except BookError as e:
+        except (BookError, OSError) as e:
             st.error(str(e))
 
 if st.session_state.book:
     try:
-        restore_disk_if_available()
-        nodes, _ = extract_nodes(st.session_state.book)
-        done = st.session_state.done
-        total = len(nodes)
-        finished = sum(node.key in done for node in nodes)
-        st.subheader('מצב התרגום')
-        progress = st.progress(finished/max(total, 1), text=f'{finished:,} מתוך {total:,} מקטעים')
-        st.caption('מקטע הוא יחידת טקסט, ולא בהכרח פרק שלם.')
-        glossary = st.text_area('מילון שמות ומונחים (לא חובה)', value=st.session_state.glossary,
-                                help='לדוגמה: Michael = מייקל. המונחים ישמשו לאורך הספר.')
-        st.session_state.glossary = glossary
-        request_delay = st.select_slider('השהיה בין בקשות API', options=[2, 5, 10, 15, 30], value=10,
-                                         format_func=lambda v: f'{v} שניות', help='השהיה מפחיתה את הסיכון למגבלת בקשות לדקה; לא עוקפת מכסה יומית.')
-        st.warning('הפעולה אוטומטית כל עוד ההרצה פועלת והדפדפן מחובר. בסביבת Streamlit החינמית אין הבטחה שהשרת ימשיך לעבוד כשהלשונית נסגרת, או שהנתונים המקומיים יישמרו לאחר אתחול.')
-        if finished < total and st.button('התחל / המשך תרגום הספר כולו', type='primary', use_container_width=True, disabled=not bool(api_key)):
+        book=st.session_state.book
+        segments,_,_=parse_book(book)
+        if not segments:
+            st.warning('לא נמצאו בספר קטעים באנגלית לתרגום.')
+            st.stop()
+        done=st.session_state.done
+        total=len(segments)
+        finished=sum(s.key in done for s in segments)
+        st.subheader('התקדמות')
+        meter=st.progress(finished/total, text=f'{finished:,} מתוך {total:,} מקטעים')
+        st.caption('מקטע אינו בהכרח עמוד או פרק. נשמר רק תרגום שעבר בדיקות בסיסיות.')
+        st.session_state.model=st.selectbox('מודל תרגום', ['gemini-2.5-flash','gemini-2.5-flash-lite'],
+                                          index=['gemini-2.5-flash','gemini-2.5-flash-lite'].index(st.session_state.model))
+        st.session_state.glossary=st.text_area('שמות ומונחים לתרגום עקבי (רשות)',value=st.session_state.glossary,
+                                              max_chars=3000,height=90)
+        delay=st.select_slider('המתנה בין בקשות מוצלחות',options=[5,10,15,20,30],value=10,
+                               format_func=lambda x:f'{x} שניות')
+        st.info('העבודה רציפה כל עוד הריצה פועלת והחיבור נשמר. היא אינה ממשיכה ברקע לאחר סגירת הדפדפן; אחסון השרת עלול להימחק.')
+        if finished < total and st.button('תרגם / המשך את הספר כולו',type='primary',use_container_width=True):
             from google import genai
-            client = genai.Client(api_key=api_key)
-            st.session_state.model = model
-            status = st.empty()
-            last_error = None
-            index_by_key = {node.key: i for i,node in enumerate(nodes)}
-            try:
-                groups_done = 0
-                for group in chunks(nodes, done):
-                    prior_index = index_by_key[group[0].key]
-                    previous = ' '.join(done[x.key] for x in nodes[max(0, prior_index-10):prior_index] if x.key in done)
-                    status.info(f'מתרגם... מקטע {prior_index + 1:,} מתוך {total:,}')
-                    translations = gemini_translate(client, model, group, glossary, previous)
-                    for node, translated in zip(group, translations):
-                        done[node.key] = translated
-                    groups_done += 1
-                    backup_now()  # automatically saved after every successful group
-                    progress.progress(len(done)/max(total,1), text=f'{len(done):,} מתוך {total:,} מקטעים')
-                    if len(done) < total:
-                        time.sleep(request_delay)
-            except QuotaStop as e:
-                last_error = f'מגבלת Gemini עצרה את התרגום: {e}. התקדמות התרגום נשמרה בשרת הנוכחי; הורד קובץ חידוש והמשך מאוחר יותר.'
-            except (BookError, Exception) as e:
-                last_error = f'התרגום נעצר: {str(e)[:300]}. הורד קובץ חידוש לפני עזיבת הדף.'
-            finally:
-                backup_now()
-            status.empty()
-            if last_error:
-                st.warning(last_error)
-            else:
-                st.success('תרגום כל המקטעים הושלם! כעת ניתן להוריד EPUB מלא.')
-            st.rerun()
+            from google.genai import types
+            # Disable opaque SDK retries: our bounded, classified retry policy owns them.
+            client=genai.Client(api_key=API_KEY, http_options=types.HttpOptions(
+                timeout=120000, retry_options=types.HttpRetryOptions(attempts=1)))
+            message=None
+            calls=0
+            status=st.empty()
+            indices={s.key:i for i,s in enumerate(segments)}
+            last_request = [None]
+            def pace_request():
+                now = time.monotonic()
+                if last_request[0] is not None:
+                    wait = delay - (now - last_request[0])
+                    if wait > 0: time.sleep(wait)
+                last_request[0] = time.monotonic()
 
-        stem = re.sub(r'[^\w.-]+', '_', st.session_state.filename.rsplit('.',1)[0])[:80]
-        if done:
-            snapshot = save_checkpoint(st.session_state.book, done, model, glossary)
-            st.download_button('הורד גיבוי והמשך (ZIP)', data=snapshot,
-                               file_name=f'{stem}_checkpoint.zip', mime='application/zip', use_container_width=True)
-        if finished == total and total > 0:
-            st.success('כל מקטעי המקור הרלוונטיים נשלחו לתרגום. לפני שימוש מומלץ לבצע בדיקת איכות והגהה.')
-            output = make_epub(st.session_state.book, done)
-            st.download_button('הורד את הספר המלא בעברית (EPUB)', data=output,
-                               file_name=f'{stem}_hebrew.epub', mime='application/epub+zip',
-                               type='primary', use_container_width=True)
-        if st.button('נקה ספר והתחל מחדש'):
-            for key in ['book','done','uploaded_stamp','filename','glossary']:
-                st.session_state.pop(key, None)
+            def record_partial(subgroup, values):
+                for seg, value in zip(subgroup, values):
+                    done[seg.key] = value
+                snapshot()
+
+            try:
+                for group in pending_groups(segments,done):
+                    first=indices[group[0].key]
+                    preceding=' '.join(done[s.key] for s in segments[max(0,first-8):first] if s.key in done)
+                    status.info(f'מתרגם מקטע {first+1:,} מתוך {total:,} ...')
+                    translations=translate_group(client,st.session_state.model,group,st.session_state.glossary,preceding,on_partial=record_partial,pacer=pace_request)
+                    for s,tr in zip(group,translations): done[s.key]=tr
+                    snapshot()  # atomic checkpoint after each successful group
+                    calls+=1
+                    finished=sum(s.key in done for s in segments)
+                    meter.progress(finished/total,text=f'{finished:,} מתוך {total:,} מקטעים')
+            except StopTranslation as ex:
+                message=f'התרגום נעצר ({ex.kind}): {ex}. הורד קובץ חידוש ZIP כדי לא לאבד את ההתקדמות.'
+            except (OSError, BookError) as ex:
+                message=f'תקלה בשמירה או בקובץ: {ex}. נסה להוריד את קובץ החידוש.'
+            except Exception:
+                message='אירעה שגיאה בלתי צפויה. נסה להוריד קובץ חידוש; פרטים טכניים זמינים ביומני השרת.'
+            finally:
+                try: snapshot()
+                except OSError: pass
+                try: client.close()
+                except Exception: pass
+            st.session_state.last_message=message or 'התרגום הושלם.'
             st.rerun()
-    except BookError as e:
-        st.error(str(e))
+        if st.session_state.get('last_message'):
+            if finished==total: st.success(st.session_state.last_message)
+            else: st.warning(st.session_state.last_message)
+        if done:
+            checkpoint=save_checkpoint(book,done,st.session_state.model,st.session_state.glossary)
+            st.download_button('הורד קובץ חידוש ZIP',data=checkpoint,
+                               file_name=f'{safe_name(st.session_state.name)}_checkpoint_v4.zip',
+                               mime='application/zip',use_container_width=True)
+        if finished==total:
+            out=make_epub(book,done)
+            st.download_button('הורד ספר מתורגם מלא EPUB',data=out,
+                               file_name=f'{safe_name(st.session_state.name)}_he.epub',
+                               mime='application/epub+zip',type='primary',use_container_width=True)
+        if st.button('התחל ספר חדש'):
+            for k in ('book','done','fingerprint','name','last_message','glossary'):
+                st.session_state.pop(k,None)
+            st.rerun()
+    except (BookError,OSError) as ex:
+        st.error(str(ex))
 
 st.divider()
-st.caption('קובצי EPUB נשלחים ל־Google Gemini API לשם תרגום. במסלול Free Google עשויה להשתמש בתוכן לשיפור שירותיה. השתמש רק בתוכן שמותר לך לתרגם, ושמור את המפתח בסוד.')
+st.caption('ספרים נשלחים ל־Gemini API. במסלול החינמי Google עשויה להשתמש בתוכן לשיפור השירות. ודא שהפרויקט ב־AI Studio הוא Free; מנוי Gemini אינו מחליף מכסת API.')
